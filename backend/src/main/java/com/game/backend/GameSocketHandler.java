@@ -12,8 +12,10 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 public class GameSocketHandler extends TextWebSocketHandler {
     private static final List<WebSocketSession> sessions = new CopyOnWriteArrayList<>();
-    
     private static final AtomicInteger playerCount = new AtomicInteger(0);
+
+    private static final AtomicInteger redScore = new AtomicInteger(0);
+    private static final AtomicInteger blueScore = new AtomicInteger(0);
     
     @Override
     public void afterConnectionEstablished(WebSocketSession session) throws Exception {
@@ -24,17 +26,37 @@ public class GameSocketHandler extends TextWebSocketHandler {
         String assignMsg = String.format("{\"type\":\"assign\", \"id\":\"%s\", \"color\":\"%s\"}", getShortId(session), color);
         session.sendMessage(new TextMessage(assignMsg));
 
+        sendScoreUpdate();
+
         System.out.println("Player connected: " + getShortId(session) + " assigned color: " + color);
     }
 
     @Override
     protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
-        // Player's xy co-ordinated
         String payload = message.getPayload();
-        String jsonMessage = String.format("{\"type\":\"move\", \"id\":\"%s\", \"position\":%s}", getShortId(session), payload);        for (WebSocketSession s : sessions) {
-            // Broadcast to everyone EXCEPT the person who just moved
-            if (s.isOpen() && !s.getId().equals(session.getId())) {
-                s.sendMessage(new TextMessage(jsonMessage));
+
+        if (payload.contains("\"type\":\"collect\"")) {
+            // Update the official score
+            if (payload.contains("\"color\":\"red\"")) {
+                redScore.addAndGet(10);
+            } else if (payload.contains("\"color\":\"blue\"")) {
+                blueScore.addAndGet(10);
+            }
+            sendScoreUpdate();
+
+            for (WebSocketSession s : sessions) { // for everyone to hide the gem
+                if (s.isOpen() && !s.getId().equals(session.getId())) {
+                    s.sendMessage(new TextMessage(payload));
+                }
+            }
+        }
+        else {
+            // It's a Movement message! Forward it to everyone else.
+            String jsonMessage = String.format("{\"type\":\"move\", \"id\":\"%s\", \"position\":%s}", getShortId(session), payload);
+            for (WebSocketSession s : sessions) {
+                if (s.isOpen() && !s.getId().equals(session.getId())) {
+                    s.sendMessage(new TextMessage(jsonMessage));
+                }
             }
         }
     }
@@ -45,10 +67,11 @@ public class GameSocketHandler extends TextWebSocketHandler {
         System.out.println("Player disconnected: " + getShortId(session));
     }
 
-    private void broadcast(String message) throws IOException {
+    private void sendScoreUpdate() throws IOException {
+        String scoreMsg = String.format("{\"type\":\"score\", \"red\":%d, \"blue\":%d}", redScore.get(), blueScore.get());
         for (WebSocketSession s : sessions) {
             if (s.isOpen()) {
-                s.sendMessage(new TextMessage(message));
+                s.sendMessage(new TextMessage(scoreMsg));
             }
         }
     }

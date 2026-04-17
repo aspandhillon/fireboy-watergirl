@@ -13,6 +13,8 @@ function App() {
 
   const networkPlayers = useRef<Record<string, { x: number; y: number }>>({});
   const playerSpriteRef = useRef<Phaser.Physics.Arcade.Sprite | null>(null);
+  const scoreTextRef = useRef<Phaser.GameObjects.Text | null>(null);
+  const gemsRef = useRef<Record<string, any>>({});
 
   useEffect(() => {
     ws.current = new WebSocket(`ws://localhost:8080/ws`);
@@ -23,7 +25,7 @@ function App() {
       try {
         const data = JSON.parse(event.data);
         if (data.type === "assign") {
-          setClientId(data.id); // Trigger the screen redraw!
+          setClientId(data.id);
           myColor.current = parseInt(data.color, 16);
           if (playerSpriteRef.current) {
             playerSpriteRef.current.setTint(myColor.current);
@@ -31,6 +33,21 @@ function App() {
         } else if (data.type === "move") {
           if (data.position && data.position.x !== undefined) {
             networkPlayers.current[data.id] = data.position;
+          }
+        } else if (data.type === "score") {
+          // updating player scores
+          if (scoreTextRef.current) {
+            scoreTextRef.current.setText(
+              `Red: ${data.red}   Blue: ${data.blue}`,
+            );
+          }
+        } else if (data.type === "collect") {
+          // hiding gem
+          console.log("Server says someone ate gem:", data.gemId);
+
+          const gemToHide = gemsRef.current[data.gemId];
+          if (gemToHide) {
+            gemToHide.destroy();
           }
         }
       } catch (e) {
@@ -51,11 +68,12 @@ function App() {
     // --- PHASER SCENE FUNCTIONS --- //
 
     function preload(this: Phaser.Scene) {
-      // Load the flipbook from the public folder
       this.load.spritesheet("dude", "dude.png", {
         frameWidth: 32,
         frameHeight: 48,
       });
+      this.load.image("ground", "platform.png");
+      this.load.image("gem", "star.png");
     }
 
     function create(this: Phaser.Scene) {
@@ -65,15 +83,115 @@ function App() {
       player.body.setCollideWorldBounds(true);
       playerSpriteRef.current = player;
 
-      const floor = this.add.rectangle(
-        400,
-        580,
-        800,
-        40,
-        0x00ff00,
-      ) as unknown as Phaser.Types.Physics.Arcade.SpriteWithStaticBody;
-      this.physics.add.existing(floor, true);
-      this.physics.add.collider(player, floor);
+      // 1. Create a "Static Group" (Objects that have physics but never move or fall)
+      const platforms = this.physics.add.staticGroup();
+      platforms.create(150, 568, "ground");
+      platforms.create(650, 568, "ground");
+
+      // 3. Build some floating ledges! (x, y, 'image_key')
+      platforms.create(600, 400, "ground");
+      platforms.create(50, 250, "ground");
+      platforms.create(750, 220, "ground");
+
+      // --- THE SCORES AND DIAMONDS ---
+
+      // 1. The Scoreboard (Drawn directly onto the canvas)
+      let redScore = 0;
+      let blueScore = 0;
+      const scoreText = this.add.text(16, 16, "Red: 0   Blue: 0", {
+        fontSize: "24px",
+        fill: "#ffffff",
+        fontFamily: "sans-serif",
+      });
+      scoreTextRef.current = scoreText;
+
+      // red Diamonds
+      const redGems = this.physics.add.staticGroup();
+      const r1 = redGems.create(200, 520, "gem").setTint(0xff0000);
+      r1.name = "red_1";
+      gemsRef.current[r1.name] = r1; // save it to the directory
+
+      const r2 = redGems.create(50, 200, "gem").setTint(0xff0000);
+      r2.name = "red_2";
+      gemsRef.current[r2.name] = r2; // save it to the directory
+      // blue Diamonds
+      const blueGems = this.physics.add.staticGroup();
+      const b1 = blueGems.create(700, 520, "gem").setTint(0x00aaff);
+      b1.name = "blue_1";
+      gemsRef.current[b1.name] = b1; // save it to the directory
+
+      const b2 = blueGems.create(750, 170, "gem").setTint(0x00aaff);
+      b2.name = "blue_2";
+      gemsRef.current[b2.name] = b2; // save it to the directory
+      const lava = this.physics.add.staticGroup();
+      const water = this.physics.add.staticGroup();
+      const fire = this.physics.add.staticGroup();
+
+      lava
+        .create(350, 568, "ground")
+        .setDisplaySize(100, 40)
+        .setTint(0x00ff00)
+        .refreshBody();
+      water
+        .create(450, 568, "ground")
+        .setDisplaySize(100, 40)
+        .setTint(0x00aaff)
+        .refreshBody();
+      fire
+        .create(650, 568, "ground")
+        .setDisplaySize(100, 40)
+        .setTint(0xff0000)
+        .refreshBody();
+
+      // The Respawn execution
+      const die = () => {
+        player.setPosition(400, 100);
+        player.setVelocity(0, 0);
+      };
+
+      // 4. The Rules
+      // We use COLLIDER so they act as solid ground, but we attach the death rule to it!
+      this.physics.add.collider(player, lava, () => {
+        die(); // both characters die on lava
+      });
+      this.physics.add.collider(player, fire, () => {
+        if (myColor.current !== 0xff0000) die(); // Blue dies on Red!
+      });
+      this.physics.add.collider(player, water, () => {
+        if (myColor.current !== 0x00aaff) die(); // Red dies on Blue!
+      });
+
+      // --- COLLECTION RULES ---
+
+      // Red collects Red
+      // Red collects Red
+      this.physics.add.overlap(player, redGems, (p, gem: any) => {
+        if (myColor.current === 0xff0000) {
+          const barcode = gem.name; // 1. READ THE BARCODE FIRST!
+          gem.destroy(); // 2. Permanently delete the gem locally
+
+          // 3. Send the safely stored barcode to the server!
+          ws.current?.send(
+            JSON.stringify({ type: "collect", color: "red", gemId: barcode }),
+          );
+        }
+      });
+
+      // Blue collects Blue
+      this.physics.add.overlap(player, blueGems, (p, gem: any) => {
+        if (myColor.current === 0x00aaff) {
+          const barcode = gem.name; // 1. READ THE BARCODE FIRST!
+          gem.destroy(); // 2. Permanently delete the gem locally
+
+          // 3. Send the safely stored barcode to the server!
+          ws.current?.send(
+            JSON.stringify({ type: "collect", color: "blue", gemId: barcode }),
+          );
+        }
+      });
+
+      // 4. Tell the physics engine that the player is allowed to stand on the platforms
+      this.physics.add.collider(player, platforms);
 
       // Setup the animations
       this.anims.create({
@@ -95,6 +213,14 @@ function App() {
       });
 
       if (this.input.keyboard) cursors = this.input.keyboard.createCursorKeys();
+
+      // Water Death Rules
+      this.physics.add.overlap(player, water, () => {
+        // If my color is NOT blue, I die!
+        if (myColor.current !== 0x00aaff) {
+          die();
+        }
+      });
     }
 
     function update(this: Phaser.Scene) {
