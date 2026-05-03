@@ -43,9 +43,9 @@ public class GameSocketHandler extends TextWebSocketHandler {
         if (payload.contains("\"type\":\"collect\"")) {
             // Update the official score
             if (payload.contains("\"color\":\"red\"")) {
-                redScore.addAndGet(10);
+                redScore.addAndGet(1);
             } else if (payload.contains("\"color\":\"blue\"")) {
-                blueScore.addAndGet(10);
+                blueScore.addAndGet(1);
             }
             sendScoreUpdate();
 
@@ -68,9 +68,39 @@ public class GameSocketHandler extends TextWebSocketHandler {
                 for (WebSocketSession s : sessions) {
                     if (s.isOpen()) s.sendMessage(new TextMessage(winMsg));
                 }
+
+                redReady.set(false);
+                blueReady.set(false);
             }
-        } else if (payload.contains("\"type\":\"game_over\"")) {
-            // NEW: If anyone dies, tell EVERYONE the game is over!
+        } else if (payload.contains("\"type\":\"request_next_level\"")) {
+            // 1. Reset the Server Data
+            redScore.set(0);
+            blueScore.set(0);
+            redReady.set(false);
+            blueReady.set(false);
+            sendScoreUpdate(); // Broadcast 0-0 to everyone
+
+            // 2. Tell both clients to load Level 2!
+            for (WebSocketSession s : sessions) {
+                if (s.isOpen()) s.sendMessage(new TextMessage("{\"type\":\"start_next_level\"}"));
+            }
+
+       } else if (payload.contains("\"type\":\"request_retry\"")) {
+            // 1. Reset the Server Data
+            redScore.set(0);
+            blueScore.set(0);
+            redReady.set(false);
+            blueReady.set(false);
+            sendScoreUpdate(); // Broadcast 0-0 to everyone
+
+            // 2. Tell both clients to restart the current level!
+            for (WebSocketSession s : sessions) {
+                if (s.isOpen()) s.sendMessage(new TextMessage("{\"type\":\"start_retry\"}"));
+            } // <-- CLOSED THE FOR LOOP
+        } // <-- CLOSED THE ELSE IF BLOCK
+
+        else if (payload.contains("\"type\":\"game_over\"")) {
+            // If anyone dies, tell EVERYONE the game is over!
             String deadMsg = "{\"type\":\"game_over\"}";
             for (WebSocketSession s : sessions) {
                 if (s.isOpen()) s.sendMessage(new TextMessage(deadMsg));
@@ -84,7 +114,7 @@ public class GameSocketHandler extends TextWebSocketHandler {
                 }
             }
         }
-    }
+    } // <-- End of handleTextMessage
 
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) throws Exception {
