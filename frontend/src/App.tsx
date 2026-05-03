@@ -15,6 +15,10 @@ function App() {
   const playerSpriteRef = useRef<Phaser.Physics.Arcade.Sprite | null>(null);
   const scoreTextRef = useRef<Phaser.GameObjects.Text | null>(null);
   const gemsRef = useRef<Record<string, any>>({});
+  const winTextRef = useRef<Phaser.GameObjects.Text | null>(null);
+  const amIAtDoor = useRef<boolean>(false);
+  const sceneRef = useRef<Phaser.Scene | null>(null);
+  const gameOverTextRef = useRef<Phaser.GameObjects.Text | null>(null);
 
   useEffect(() => {
     ws.current = new WebSocket(`ws://localhost:8080/ws`);
@@ -49,6 +53,16 @@ function App() {
           if (gemToHide) {
             gemToHide.destroy();
           }
+        } else if (data.type === "win") {
+          if (winTextRef.current) {
+            winTextRef.current.setVisible(true); // REVEAL THE TEXT!
+            if (sceneRef.current) sceneRef.current.physics.pause(); // Freeze the game!
+          }
+        } else if (data.type === "game_over") {
+          if (gameOverTextRef.current) {
+            gameOverTextRef.current.setVisible(true); // REVEAL THE TEXT!
+          }
+          if (sceneRef.current) sceneRef.current.physics.pause(); // Freeze the game!
         }
       } catch (e) {
         console.log("Error parsing message", event.data);
@@ -60,6 +74,8 @@ function App() {
 
     let player: Phaser.Types.Physics.Arcade.SpriteWithDynamicBody;
     let cursors: Phaser.Types.Input.Keyboard.CursorKeys;
+    let redDoor: Phaser.GameObjects.Rectangle;
+    let blueDoor: Phaser.GameObjects.Rectangle;
     const otherPlayerSprites: Record<
       string,
       Phaser.Types.Physics.Arcade.SpriteWithDynamicBody
@@ -74,6 +90,7 @@ function App() {
       });
       this.load.image("ground", "platform.png");
       this.load.image("gem", "star.png");
+      this.load.audio("bgm", "bgm.mp3");
     }
 
     function create(this: Phaser.Scene) {
@@ -82,6 +99,13 @@ function App() {
       player.setTint(myColor.current);
       player.body.setCollideWorldBounds(true);
       playerSpriteRef.current = player;
+
+      // --- BACKGROUND MUSIC ---
+      const music = this.sound.add("bgm", {
+        loop: true, // Keep playing forever
+        volume: 1, // Set volume to 30% so it's not too loud
+      });
+      music.play();
 
       // 1. Create a "Static Group" (Objects that have physics but never move or fall)
       const platforms = this.physics.add.staticGroup();
@@ -92,6 +116,44 @@ function App() {
       platforms.create(600, 400, "ground");
       platforms.create(50, 250, "ground");
       platforms.create(750, 220, "ground");
+
+      // Save the scene so React can pause it later!
+      sceneRef.current = this;
+
+      // --- THE EXIT DOORS (LOWERED TO TOUCH THE FLOOR) ---
+      // Red Door (Lowered to y: 200)
+      redDoor = this.add.rectangle(50, 200, 40, 60, 0xff0000, 0.5);
+      this.physics.add.existing(redDoor, true);
+
+      // Blue Door (Lowered to y: 170)
+      blueDoor = this.add.rectangle(750, 170, 40, 60, 0x00aaff, 0.5);
+      this.physics.add.existing(blueDoor, true);
+
+      // The Hidden Victory Text
+      const winText = this.add
+        .text(400, 300, "LEVEL COMPLETE!", {
+          fontSize: "48px",
+          fill: "#ffff00",
+          fontStyle: "bold",
+          stroke: "#000000",
+          strokeThickness: 6,
+        })
+        .setOrigin(0.5)
+        .setVisible(false);
+      winTextRef.current = winText;
+
+      // The Hidden GAME OVER Text
+      const gameOverText = this.add
+        .text(400, 300, "GAME OVER", {
+          fontSize: "64px",
+          fill: "#ff0000",
+          fontStyle: "bold",
+          stroke: "#000000",
+          strokeThickness: 8,
+        })
+        .setOrigin(0.5)
+        .setVisible(false);
+      gameOverTextRef.current = gameOverText;
 
       // --- THE SCORES AND DIAMONDS ---
 
@@ -144,26 +206,29 @@ function App() {
         .refreshBody();
 
       // The Respawn execution
-      const die = () => {
-        player.setPosition(400, 100);
-        player.setVelocity(0, 0);
+      // const die = () => {
+      //   player.setPosition(400, 100);
+      //   player.setVelocity(0, 0);
+      // };
+
+      const triggerGameOver = () => {
+        ws.current?.send(JSON.stringify({ type: "game_over" }));
       };
 
       // 4. The Rules
       // We use COLLIDER so they act as solid ground, but we attach the death rule to it!
       this.physics.add.collider(player, lava, () => {
-        die(); // both characters die on lava
+        triggerGameOver(); // both characters die on lava
       });
       this.physics.add.collider(player, fire, () => {
-        if (myColor.current !== 0xff0000) die(); // Blue dies on Red!
+        if (myColor.current !== 0xff0000) triggerGameOver(); // Blue dies on Red!
       });
       this.physics.add.collider(player, water, () => {
-        if (myColor.current !== 0x00aaff) die(); // Red dies on Blue!
+        if (myColor.current !== 0x00aaff) triggerGameOver(); // Red dies on Blue!
       });
 
       // --- COLLECTION RULES ---
 
-      // Red collects Red
       // Red collects Red
       this.physics.add.overlap(player, redGems, (p, gem: any) => {
         if (myColor.current === 0xff0000) {
@@ -213,14 +278,6 @@ function App() {
       });
 
       if (this.input.keyboard) cursors = this.input.keyboard.createCursorKeys();
-
-      // Water Death Rules
-      this.physics.add.overlap(player, water, () => {
-        // If my color is NOT blue, I die!
-        if (myColor.current !== 0x00aaff) {
-          die();
-        }
-      });
     }
 
     function update(this: Phaser.Scene) {
@@ -240,6 +297,29 @@ function App() {
 
       if (cursors.up.isDown && player.body.blocked.down) {
         player.body.velocity.y = -350;
+      }
+
+      // --- THE WIN CONDITION LOGIC ---
+      const targetDoor = myColor.current === 0xff0000 ? redDoor : blueDoor;
+      if (targetDoor) {
+        // Check if the player hitbox is touching the door hitbox
+        const isTouching = Phaser.Geom.Intersects.RectangleToRectangle(
+          player.getBounds(),
+          targetDoor.getBounds(),
+        );
+
+        // Only tell the server if our status CHANGED!
+        if (isTouching !== amIAtDoor.current) {
+          amIAtDoor.current = isTouching;
+          const colorStr = myColor.current === 0xff0000 ? "red" : "blue";
+          ws.current?.send(
+            JSON.stringify({
+              type: "door_status",
+              color: colorStr,
+              ready: isTouching,
+            }),
+          );
+        }
       }
 
       // Networking

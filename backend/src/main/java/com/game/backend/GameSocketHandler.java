@@ -5,6 +5,8 @@ import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
+
 
 import java.io.IOException;
 import java.util.List;
@@ -16,7 +18,10 @@ public class GameSocketHandler extends TextWebSocketHandler {
 
     private static final AtomicInteger redScore = new AtomicInteger(0);
     private static final AtomicInteger blueScore = new AtomicInteger(0);
-    
+
+    private static final AtomicBoolean redReady = new AtomicBoolean(false);
+    private static final AtomicBoolean blueReady = new AtomicBoolean(false);
+
     @Override
     public void afterConnectionEstablished(WebSocketSession session) throws Exception {
         sessions.add(session);
@@ -49,8 +54,28 @@ public class GameSocketHandler extends TextWebSocketHandler {
                     s.sendMessage(new TextMessage(payload));
                 }
             }
-        }
-        else {
+        } else if (payload.contains("\"type\":\"door_status\"")) {
+            // Update the checklist safely across threads
+            if (payload.contains("\"color\":\"red\"")) {
+                redReady.set(payload.contains("\"ready\":true"));
+            } else if (payload.contains("\"color\":\"blue\"")) {
+                blueReady.set(payload.contains("\"ready\":true"));
+            }
+
+            // Check if BOTH players are at their doors!
+            if (redReady.get() && blueReady.get()) {
+                String winMsg = "{\"type\":\"win\"}";
+                for (WebSocketSession s : sessions) {
+                    if (s.isOpen()) s.sendMessage(new TextMessage(winMsg));
+                }
+            }
+        } else if (payload.contains("\"type\":\"game_over\"")) {
+            // NEW: If anyone dies, tell EVERYONE the game is over!
+            String deadMsg = "{\"type\":\"game_over\"}";
+            for (WebSocketSession s : sessions) {
+                if (s.isOpen()) s.sendMessage(new TextMessage(deadMsg));
+            }
+        } else {
             // It's a Movement message! Forward it to everyone else.
             String jsonMessage = String.format("{\"type\":\"move\", \"id\":\"%s\", \"position\":%s}", getShortId(session), payload);
             for (WebSocketSession s : sessions) {
@@ -65,6 +90,8 @@ public class GameSocketHandler extends TextWebSocketHandler {
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) throws Exception {
         sessions.remove(session);
         System.out.println("Player disconnected: " + getShortId(session));
+        redReady.set(false);
+        blueReady.set(false);
     }
 
     private void sendScoreUpdate() throws IOException {
